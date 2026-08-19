@@ -1,0 +1,41 @@
+name: BaoStock Cloud Probe
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "tools/baostock_probe.py"
+      - ".github/workflows/baostock-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install BaoStock only
+        run: python -m pip install --disable-pip-version-check baostock==0.9.3
+
+      - name: Run pre-2024 connectivity and schema probe
+        run: |
+          set -o pipefail
+          python tools/baostock_probe.py | tee baostock_probe_result.json
+
+      - name: Upload probe result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baostock-probe-result
+          path: baostock_probe_result.json
+          if-no-files-found: ignore
+          retention-days: 7
