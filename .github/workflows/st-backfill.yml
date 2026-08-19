@@ -1,0 +1,157 @@
+name: Historical ST Backfill (Encrypted)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mrs-historical-st-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+
+    env:
+      MRS_DATA_PASSPHRASE: ${{ secrets.MRS_DATA_PASSPHRASE }}
+      BATCH_SIZE: "250"
+      EXPECTED_STOCKS: "5251"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install BaoStock only
+        run: python -m pip install --disable-pip-version-check baostock==0.9.3
+
+      - name: Verify encryption secret exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${MRS_DATA_PASSPHRASE:-}" ]; then
+            echo "Required Actions secret MRS_DATA_PASSPHRASE is missing."
+            exit 2
+          fi
+
+      - name: Decrypt frozen research Universe
+        shell: bash
+        run: |
+          set -euo pipefail
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -a -A \
+            -in secure/input/research_universe_2014_2023_sha256_ae6f0c.csv.gz.enc \
+            -out /tmp/universe.csv.gz \
+            -pass env:MRS_DATA_PASSPHRASE
+          gunzip -c /tmp/universe.csv.gz > /tmp/universe.csv
+          python tools/st_backfill.py validate-universe --universe /tmp/universe.csv
+
+      - name: Configure checkpoint commits
+        shell: bash
+        run: |
+          git config user.name "LIBF MRS Research Bot"
+          git config user.email "mrs-research-bot@users.noreply.github.com"
+
+      - name: Backfill 2014-2023 ST with encrypted checkpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p secure/checkpoints
+          TOTAL_BATCHES=$(( (EXPECTED_STOCKS + BATCH_SIZE - 1) / BATCH_SIZE ))
+          echo "Total encrypted batches: ${TOTAL_BATCHES}"
+
+          for ((i=0; i<TOTAL_BATCHES; i++)); do
+            IDX=$(printf "%03d" "$i")
+            ENC="secure/checkpoints/st_2014_2023_batch_${IDX}.csv.gz.enc"
+
+            if [ -f "$ENC" ]; then
+              echo "Batch ${IDX}: encrypted checkpoint already exists; skip."
+              continue
+            fi
+
+            PLAIN="/tmp/st_batch_${IDX}.csv.gz"
+            python tools/st_backfill.py batch \
+              --universe /tmp/universe.csv \
+              --output "$PLAIN" \
+              --batch-index "$i" \
+              --batch-size "$BATCH_SIZE"
+
+            openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
+              -in "$PLAIN" \
+              -out "$ENC" \
+              -pass env:MRS_DATA_PASSPHRASE
+            rm -f "$PLAIN"
+
+            git add "$ENC"
+            git commit -m "Add encrypted ST checkpoint ${IDX}"
+            git push origin HEAD:main
+          done
+
+      - name: Decrypt checkpoints for closed Data Gate audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/st_checkpoints
+          COUNT=0
+          for ENC in secure/checkpoints/st_2014_2023_batch_*.csv.gz.enc; do
+            [ -e "$ENC" ] || continue
+            BASE=$(basename "$ENC" .enc)
+            openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+              -in "$ENC" \
+              -out "/tmp/st_checkpoints/$BASE" \
+              -pass env:MRS_DATA_PASSPHRASE
+            COUNT=$((COUNT + 1))
+          done
+          echo "Decrypted checkpoint count for audit: $COUNT"
+
+      - name: Build combined audit result without publishing plaintext
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/st_backfill.py combine \
+            --checkpoint-dir /tmp/st_checkpoints \
+            --output /tmp/historical_st_2014_2023.csv.gz \
+            --manifest /tmp/st_manifest.json
+
+      - name: Encrypt and commit audit manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p secure/final
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
+            -in /tmp/st_manifest.json \
+            -out secure/final/st_manifest_2014_2023.json.enc \
+            -pass env:MRS_DATA_PASSPHRASE
+
+          git add secure/final/st_manifest_2014_2023.json.enc
+          if ! git diff --cached --quiet; then
+            git commit -m "Add encrypted ST Data Gate manifest"
+            git push origin HEAD:main
+          fi
+
+      - name: Enforce Data Gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, sys
+          with open("/tmp/st_manifest.json", "r", encoding="utf-8") as f:
+              m = json.load(f)
+          sys.exit(0 if m.get("data_gate") == "PASS" else 2)
+          PY
+
+      - name: Remove plaintext research data
+        if: always()
+        shell: bash
+        run: |
+          rm -f /tmp/universe.csv /tmp/universe.csv.gz
+          rm -f /tmp/historical_st_2014_2023.csv.gz /tmp/st_manifest.json
+          rm -rf /tmp/st_checkpoints
