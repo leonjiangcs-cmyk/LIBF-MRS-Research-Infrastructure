@@ -1,0 +1,43 @@
+name: Export ST Research Snapshot V0.1 (Encrypted)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/st-research-snapshot-export.yml"
+
+permissions:
+  contents: read
+
+env:
+  MRS_DATA_PASSPHRASE: ${{ secrets.MRS_DATA_PASSPHRASE }}
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Export encrypted research snapshot
+        run: python tools/export_st_research_snapshot.py
+
+      - name: Upload encrypted snapshot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LIBF_MRS_Internal_Fragility_Research_Snapshot_V0_1_ENCRYPTED
+          path: /tmp/libf_mrs_st_snapshot_export_v0_1/*
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
