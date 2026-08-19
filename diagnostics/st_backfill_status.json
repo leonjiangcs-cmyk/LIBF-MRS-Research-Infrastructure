@@ -1,12 +1,12 @@
 {
-  "workflow": "Historical ST Backfill V2 (Encrypted)",
-  "run_id": "32259077473",
+  "workflow": "Historical ST Backfill V3 (Encrypted)",
+  "run_id": "32259275501",
   "run_attempt": "1",
-  "stage": "publish_preflight_status",
-  "status": "FAIL",
+  "stage": "preflight_passed",
+  "status": "RUNNING",
   "checkpoint_count": 0,
   "expected_batches": 22,
   "expected_stocks": 5251,
   "final_holdout_2024_plus_used": false,
-  "updated_at_utc": "2026-08-19T13:37:01.627984+00:00"
+  "updated_at_utc": "2026-08-19T13:39:11.116750+00:00"
 }
