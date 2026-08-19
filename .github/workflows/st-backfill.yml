@@ -24,12 +24,24 @@ jobs:
       MRS_DATA_PASSPHRASE: ${{ secrets.MRS_DATA_PASSPHRASE }}
       BATCH_SIZE: "250"
       EXPECTED_STOCKS: "5251"
+      EXPECTED_BATCHES: "22"
+      EXPECTED_UNIVERSE_PARTS: "5"
+      EXPECTED_UNIVERSE_B64_BYTES: "32556"
+      EXPECTED_UNIVERSE_CIPHERTEXT_SHA256: "3ec8248fde2a4d4d4687ac88106c2c5e3a2f32870b3baecb1605f12b8ce95741"
+      EXPECTED_UNIVERSE_PLAINTEXT_SHA256: "ae6f0ca804b126ac9e982308fee34551d2d6e538f7e9133b93902c09aa2854e2"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Configure checkpoint commits
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "LIBF MRS Research Bot"
+          git config user.email "mrs-research-bot@users.noreply.github.com"
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -43,41 +55,125 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "verify_secret" > /tmp/st_stage
           if [ -z "${MRS_DATA_PASSPHRASE:-}" ]; then
             echo "Required Actions secret MRS_DATA_PASSPHRASE is missing."
             exit 2
           fi
 
-      - name: Decrypt frozen research Universe
+      - name: Reconstruct and decrypt frozen research Universe
         shell: bash
         run: |
           set -euo pipefail
-          echo "Decrypting frozen research Universe..."
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -a \
-            -in secure/input/research_universe_2014_2023_sha256_ae6f0c.csv.gz.enc \
+          echo "decrypt_universe" > /tmp/st_stage
+
+          find secure/input -maxdepth 1 -type f \
+            -name 'research_universe_2014_2023.enc.part???' \
+            | sort > /tmp/universe_parts.txt
+
+          PART_COUNT=$(wc -l < /tmp/universe_parts.txt | tr -d ' ')
+          if [ "$PART_COUNT" != "$EXPECTED_UNIVERSE_PARTS" ]; then
+            echo "Encrypted Universe part count mismatch: $PART_COUNT != $EXPECTED_UNIVERSE_PARTS"
+            exit 2
+          fi
+
+          : > /tmp/universe.enc.b64
+          while IFS= read -r PART; do
+            cat "$PART" >> /tmp/universe.enc.b64
+          done < /tmp/universe_parts.txt
+
+          B64_BYTES=$(wc -c < /tmp/universe.enc.b64 | tr -d ' ')
+          if [ "$B64_BYTES" != "$EXPECTED_UNIVERSE_B64_BYTES" ]; then
+            echo "Encrypted Universe byte count mismatch: $B64_BYTES != $EXPECTED_UNIVERSE_B64_BYTES"
+            exit 2
+          fi
+
+          CIPHER_SHA=$(sha256sum /tmp/universe.enc.b64 | awk '{print $1}')
+          if [ "$CIPHER_SHA" != "$EXPECTED_UNIVERSE_CIPHERTEXT_SHA256" ]; then
+            echo "Encrypted Universe ciphertext SHA256 mismatch."
+            exit 2
+          fi
+
+          base64 --decode /tmp/universe.enc.b64 > /tmp/universe.enc.bin
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('/tmp/universe.enc.bin')
+          if p.read_bytes()[:8] != b'Salted__':
+              raise SystemExit('OpenSSL Salted__ header missing from encrypted Universe')
+          PY
+
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+            -in /tmp/universe.enc.bin \
             -out /tmp/universe.csv.gz \
             -pass env:MRS_DATA_PASSPHRASE
-          test -s /tmp/universe.csv.gz
+
+          gzip -t /tmp/universe.csv.gz
           gunzip -c /tmp/universe.csv.gz > /tmp/universe.csv
           test -s /tmp/universe.csv
-          python tools/st_backfill.py validate-universe --universe /tmp/universe.csv
 
-      - name: Configure checkpoint commits
+          PLAIN_SHA=$(sha256sum /tmp/universe.csv | awk '{print $1}')
+          if [ "$PLAIN_SHA" != "$EXPECTED_UNIVERSE_PLAINTEXT_SHA256" ]; then
+            echo "Research Universe plaintext SHA256 mismatch."
+            exit 2
+          fi
+
+          python tools/st_backfill.py validate-universe --universe /tmp/universe.csv
+          rm -f /tmp/universe.enc.b64 /tmp/universe.enc.bin /tmp/universe_parts.txt
+
+      - name: BaoStock preflight
         shell: bash
         run: |
-          git config user.name "LIBF MRS Research Bot"
-          git config user.email "mrs-research-bot@users.noreply.github.com"
+          set -euo pipefail
+          echo "baostock_preflight" > /tmp/st_stage
+          python tools/baostock_probe.py
+
+      - name: Publish preflight PASS status
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "publish_preflight_status" > /tmp/st_stage
+          mkdir -p diagnostics
+          CHECKPOINT_COUNT=$(find secure/checkpoints -maxdepth 1 -type f -name 'st_2014_2023_batch_*.csv.gz.enc' 2>/dev/null | wc -l | tr -d ' ')
+          python - <<PY
+          import json, os
+          from datetime import datetime, timezone
+          payload = {
+              "workflow": "Historical ST Backfill (Encrypted)",
+              "run_id": os.environ.get("GITHUB_RUN_ID"),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "stage": "preflight_passed",
+              "status": "RUNNING",
+              "checkpoint_count": int("${CHECKPOINT_COUNT}"),
+              "expected_batches": int(os.environ["EXPECTED_BATCHES"]),
+              "expected_stocks": int(os.environ["EXPECTED_STOCKS"]),
+              "final_holdout_2024_plus_used": False,
+              "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+          }
+          with open("diagnostics/st_backfill_status.json", "w", encoding="utf-8") as f:
+              json.dump(payload, f, ensure_ascii=False, indent=2)
+              f.write("\n")
+          PY
+          git add diagnostics/st_backfill_status.json
+          if ! git diff --cached --quiet; then
+            git commit -m "ST backfill preflight passed"
+            git push origin HEAD:main
+          fi
 
       - name: Backfill 2014-2023 ST with encrypted checkpoints
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p secure/checkpoints
+          mkdir -p secure/checkpoints diagnostics
           TOTAL_BATCHES=$(( (EXPECTED_STOCKS + BATCH_SIZE - 1) / BATCH_SIZE ))
+          if [ "$TOTAL_BATCHES" != "$EXPECTED_BATCHES" ]; then
+            echo "Batch geometry mismatch: $TOTAL_BATCHES != $EXPECTED_BATCHES"
+            exit 2
+          fi
           echo "Total encrypted batches: ${TOTAL_BATCHES}"
 
           for ((i=0; i<TOTAL_BATCHES; i++)); do
             IDX=$(printf "%03d" "$i")
+            echo "backfill_batch_${IDX}" > /tmp/st_stage
             ENC="secure/checkpoints/st_2014_2023_batch_${IDX}.csv.gz.enc"
 
             if [ -f "$ENC" ]; then
@@ -98,7 +194,35 @@ jobs:
               -pass env:MRS_DATA_PASSPHRASE
             rm -f "$PLAIN"
 
-            git add "$ENC"
+            CHECKPOINT_COUNT=$(find secure/checkpoints -maxdepth 1 -type f -name 'st_2014_2023_batch_*.csv.gz.enc' | wc -l | tr -d ' ')
+            STOCKS_COMMITTED=$(( CHECKPOINT_COUNT * BATCH_SIZE ))
+            if [ "$STOCKS_COMMITTED" -gt "$EXPECTED_STOCKS" ]; then
+              STOCKS_COMMITTED="$EXPECTED_STOCKS"
+            fi
+
+            python - <<PY
+            import json, os
+            from datetime import datetime, timezone
+            payload = {
+                "workflow": "Historical ST Backfill (Encrypted)",
+                "run_id": os.environ.get("GITHUB_RUN_ID"),
+                "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+                "stage": "checkpoint_committed",
+                "status": "RUNNING",
+                "last_checkpoint": "${IDX}",
+                "checkpoint_count": int("${CHECKPOINT_COUNT}"),
+                "expected_batches": int(os.environ["EXPECTED_BATCHES"]),
+                "stocks_committed_upper_bound": int("${STOCKS_COMMITTED}"),
+                "expected_stocks": int(os.environ["EXPECTED_STOCKS"]),
+                "final_holdout_2024_plus_used": False,
+                "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+            }
+            with open("diagnostics/st_backfill_status.json", "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+            PY
+
+            git add "$ENC" diagnostics/st_backfill_status.json
             git commit -m "Add encrypted ST checkpoint ${IDX}"
             git push origin HEAD:main
           done
@@ -107,6 +231,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "decrypt_checkpoints" > /tmp/st_stage
           mkdir -p /tmp/st_checkpoints
           COUNT=0
           for ENC in secure/checkpoints/st_2014_2023_batch_*.csv.gz.enc; do
@@ -116,14 +241,20 @@ jobs:
               -in "$ENC" \
               -out "/tmp/st_checkpoints/$BASE" \
               -pass env:MRS_DATA_PASSPHRASE
+            gzip -t "/tmp/st_checkpoints/$BASE"
             COUNT=$((COUNT + 1))
           done
           echo "Decrypted checkpoint count for audit: $COUNT"
+          if [ "$COUNT" != "$EXPECTED_BATCHES" ]; then
+            echo "Checkpoint count mismatch before Data Gate: $COUNT != $EXPECTED_BATCHES"
+            exit 2
+          fi
 
       - name: Build combined audit result without publishing plaintext
         shell: bash
         run: |
           set -euo pipefail
+          echo "build_data_gate_manifest" > /tmp/st_stage
           python tools/st_backfill.py combine \
             --checkpoint-dir /tmp/st_checkpoints \
             --output /tmp/historical_st_2014_2023.csv.gz \
@@ -133,6 +264,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "encrypt_data_gate_manifest" > /tmp/st_stage
           mkdir -p secure/final
           openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
             -in /tmp/st_manifest.json \
@@ -149,6 +281,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "enforce_data_gate" > /tmp/st_stage
           python - <<'PY'
           import json, sys
           with open("/tmp/st_manifest.json", "r", encoding="utf-8") as f:
@@ -156,10 +289,74 @@ jobs:
           sys.exit(0 if m.get("data_gate") == "PASS" else 2)
           PY
 
+      - name: Publish final PASS status
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "publish_final_status" > /tmp/st_stage
+          mkdir -p diagnostics
+          python - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+          payload = {
+              "workflow": "Historical ST Backfill (Encrypted)",
+              "run_id": os.environ.get("GITHUB_RUN_ID"),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "stage": "complete",
+              "status": "PASS",
+              "checkpoint_count": int(os.environ["EXPECTED_BATCHES"]),
+              "expected_batches": int(os.environ["EXPECTED_BATCHES"]),
+              "expected_stocks": int(os.environ["EXPECTED_STOCKS"]),
+              "data_gate": "PASS",
+              "final_holdout_2024_plus_used": False,
+              "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+          }
+          with open("diagnostics/st_backfill_status.json", "w", encoding="utf-8") as f:
+              json.dump(payload, f, ensure_ascii=False, indent=2)
+              f.write("\n")
+          PY
+          git add diagnostics/st_backfill_status.json
+          git commit -m "Mark historical ST backfill PASS"
+          git push origin HEAD:main
+
+      - name: Publish technical failure status
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p diagnostics
+          STAGE=$(cat /tmp/st_stage 2>/dev/null || echo unknown)
+          CHECKPOINT_COUNT=$(find secure/checkpoints -maxdepth 1 -type f -name 'st_2014_2023_batch_*.csv.gz.enc' 2>/dev/null | wc -l | tr -d ' ')
+          export STAGE CHECKPOINT_COUNT
+          python - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+          payload = {
+              "workflow": "Historical ST Backfill (Encrypted)",
+              "run_id": os.environ.get("GITHUB_RUN_ID"),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "stage": os.environ.get("STAGE", "unknown"),
+              "status": "FAIL",
+              "checkpoint_count": int(os.environ.get("CHECKPOINT_COUNT", "0")),
+              "expected_batches": int(os.environ["EXPECTED_BATCHES"]),
+              "expected_stocks": int(os.environ["EXPECTED_STOCKS"]),
+              "final_holdout_2024_plus_used": False,
+              "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+          }
+          with open("diagnostics/st_backfill_status.json", "w", encoding="utf-8") as f:
+              json.dump(payload, f, ensure_ascii=False, indent=2)
+              f.write("\n")
+          PY
+          git add diagnostics/st_backfill_status.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Record ST backfill failure stage: ${STAGE}"
+            git push origin HEAD:main
+          fi
+
       - name: Remove plaintext research data
         if: always()
         shell: bash
         run: |
-          rm -f /tmp/universe.csv /tmp/universe.csv.gz
+          rm -f /tmp/universe.csv /tmp/universe.csv.gz /tmp/universe.enc.bin /tmp/universe.enc.b64 /tmp/universe_parts.txt
           rm -f /tmp/historical_st_2014_2023.csv.gz /tmp/st_manifest.json
           rm -rf /tmp/st_checkpoints
