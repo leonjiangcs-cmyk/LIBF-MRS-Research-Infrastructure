@@ -23,9 +23,10 @@ jobs:
       MRS_DATA_PASSPHRASE: ${{ secrets.MRS_DATA_PASSPHRASE }}
 
     steps:
-      - name: Checkout
+      - name: Checkout latest main
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
       - name: Configure Git
