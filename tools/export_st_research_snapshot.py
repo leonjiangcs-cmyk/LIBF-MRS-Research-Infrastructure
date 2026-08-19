@@ -12,12 +12,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKPOINT_DIR = ROOT / "secure" / "checkpoints"
+DIAG_DIR = ROOT / "diagnostics"
+STATUS_PATH = DIAG_DIR / "st_snapshot_export_status.json"
 TMP_ROOT = Path("/tmp/libf_mrs_st_snapshot_v0_1")
 PLAIN_CP_DIR = TMP_ROOT / "checkpoints"
 EXPORT_DIR = Path("/tmp/libf_mrs_st_snapshot_export_v0_1")
 EXPECTED_BATCHES = 22
 EXPECTED_STOCKS = 5251
 RESEARCH_END = "2023-12-31"
+ARTIFACT_NAME = "LIBF_MRS_Internal_Fragility_Research_Snapshot_V0_1_ENCRYPTED"
 
 
 def sha256_file(path: Path) -> str:
@@ -45,6 +48,13 @@ def encrypt(src: Path, dst: Path) -> None:
         "openssl", "enc", "-aes-256-cbc", "-pbkdf2", "-iter", "200000", "-salt",
         "-in", str(src), "-out", str(dst), "-pass", "env:MRS_DATA_PASSPHRASE",
     ])
+
+
+def write_status(payload: dict[str, object]) -> None:
+    DIAG_DIR.mkdir(parents=True, exist_ok=True)
+    STATUS_PATH.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def main() -> int:
@@ -113,11 +123,24 @@ def main() -> int:
             "manifest_encrypted_bytes": manifest_enc.stat().st_size,
             "source_commit": os.environ.get("GITHUB_SHA"),
             "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
+            "artifact_name": ARTIFACT_NAME,
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
         }
         (EXPORT_DIR / "transport_manifest.json").write_text(
             json.dumps(transport, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
+        write_status({
+            "workflow": "Export ST Research Snapshot V0.1 (Encrypted)",
+            "status": "EXPORT_READY",
+            "run_id": os.environ.get("GITHUB_RUN_ID"),
+            "artifact_name": ARTIFACT_NAME,
+            "checkpoint_count": EXPECTED_BATCHES,
+            "expected_stocks": EXPECTED_STOCKS,
+            "data_gate": "PASS",
+            "final_holdout_2024_plus_used": False,
+            "combined_plaintext_sha256": m["combined_output_sha256"],
+            "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+        })
         print(json.dumps(transport, ensure_ascii=False, indent=2), flush=True)
         return 0
     finally:
