@@ -4,11 +4,11 @@
   "run_attempt": "1",
   "stage": "checkpoint_committed",
   "status": "RUNNING",
-  "checkpoint_count": 4,
+  "checkpoint_count": 5,
   "expected_batches": 22,
   "expected_stocks": 5251,
   "final_holdout_2024_plus_used": false,
-  "updated_at_utc": "2026-08-19T15:09:27.797328+00:00",
-  "last_checkpoint": "003",
-  "stocks_committed_upper_bound": 1000
+  "updated_at_utc": "2026-08-19T15:34:11.426588+00:00",
+  "last_checkpoint": "004",
+  "stocks_committed_upper_bound": 1250
 }
