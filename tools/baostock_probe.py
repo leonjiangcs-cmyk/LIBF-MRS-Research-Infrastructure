@@ -25,19 +25,18 @@ def tcp_probe() -> dict:
 
 
 def patch_baostock_endpoint() -> dict:
+    # BaoStock 0.9.3 reads the endpoint from baostock.common.contants.
+    # Patch only that module. Importing baostock.login.loginout directly is
+    # incompatible with the package's public import surface on some runtimes.
     import baostock.common.contants as constants
-    import baostock.login.loginout as loginout
 
     changed = {}
-    for module_name, module in (("contants", constants), ("loginout", loginout)):
-        if hasattr(module, "BAOSTOCK_SERVER_IP"):
-            old = getattr(module, "BAOSTOCK_SERVER_IP")
-            setattr(module, "BAOSTOCK_SERVER_IP", HOST)
-            changed[f"{module_name}.BAOSTOCK_SERVER_IP"] = {"old": old, "new": HOST}
-        if hasattr(module, "BAOSTOCK_SERVER_PORT"):
-            old = getattr(module, "BAOSTOCK_SERVER_PORT")
-            setattr(module, "BAOSTOCK_SERVER_PORT", PORT)
-            changed[f"{module_name}.BAOSTOCK_SERVER_PORT"] = {"old": old, "new": PORT}
+    old_ip = getattr(constants, "BAOSTOCK_SERVER_IP", None)
+    old_port = getattr(constants, "BAOSTOCK_SERVER_PORT", None)
+    constants.BAOSTOCK_SERVER_IP = HOST
+    constants.BAOSTOCK_SERVER_PORT = PORT
+    changed["contants.BAOSTOCK_SERVER_IP"] = {"old": old_ip, "new": HOST}
+    changed["contants.BAOSTOCK_SERVER_PORT"] = {"old": old_port, "new": PORT}
     return changed
 
 
