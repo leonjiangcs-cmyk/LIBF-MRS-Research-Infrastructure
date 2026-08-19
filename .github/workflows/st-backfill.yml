@@ -2,6 +2,11 @@ name: Historical ST Backfill (Encrypted)
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/st-backfill.yml"
 
 permissions:
   contents: write
@@ -47,11 +52,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -a -A \
+          echo "Decrypting frozen research Universe..."
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -a \
             -in secure/input/research_universe_2014_2023_sha256_ae6f0c.csv.gz.enc \
             -out /tmp/universe.csv.gz \
             -pass env:MRS_DATA_PASSPHRASE
+          test -s /tmp/universe.csv.gz
           gunzip -c /tmp/universe.csv.gz > /tmp/universe.csv
+          test -s /tmp/universe.csv
           python tools/st_backfill.py validate-universe --universe /tmp/universe.csv
 
       - name: Configure checkpoint commits
