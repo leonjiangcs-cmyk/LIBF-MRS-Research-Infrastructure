@@ -30,15 +30,43 @@ jobs:
           git config user.name "LIBF MRS Research Bot"
           git config user.email "mrs-research-bot@users.noreply.github.com"
 
+      - name: Publish export started status
+        run: |
+          mkdir -p diagnostics
+          python - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+          from pathlib import Path
+          Path("diagnostics/st_snapshot_export_status.json").write_text(
+              json.dumps({
+                  "workflow": "Export ST Research Snapshot V0.1 (Encrypted)",
+                  "status": "RUNNING",
+                  "stage": "started",
+                  "run_id": os.environ.get("GITHUB_RUN_ID"),
+                  "final_holdout_2024_plus_used": False,
+                  "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+              }, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          git add diagnostics/st_snapshot_export_status.json
+          git commit -m "Record ST snapshot export started"
+          git push origin HEAD:main
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Export encrypted research snapshot
+        id: export_snapshot
+        continue-on-error: true
         run: python tools/export_st_research_snapshot.py
 
       - name: Upload encrypted snapshot artifact
+        id: upload_snapshot
+        if: steps.export_snapshot.outcome == 'success'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: LIBF_MRS_Internal_Fragility_Research_Snapshot_V0_1_ENCRYPTED
@@ -47,11 +75,55 @@ jobs:
           retention-days: 7
           compression-level: 0
 
-      - name: Publish export status
+      - name: Publish terminal export status
+        if: always()
         run: |
+          EXPORT_OUTCOME="${{ steps.export_snapshot.outcome }}"
+          UPLOAD_OUTCOME="${{ steps.upload_snapshot.outcome }}"
+          if [ "$EXPORT_OUTCOME" != "success" ]; then
+            python - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+          from pathlib import Path
+          Path("diagnostics/st_snapshot_export_status.json").write_text(
+              json.dumps({
+                  "workflow": "Export ST Research Snapshot V0.1 (Encrypted)",
+                  "status": "FAIL",
+                  "stage": "export_snapshot",
+                  "run_id": os.environ.get("GITHUB_RUN_ID"),
+                  "final_holdout_2024_plus_used": False,
+                  "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+              }, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          elif [ "$UPLOAD_OUTCOME" != "success" ]; then
+            python - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+          from pathlib import Path
+          Path("diagnostics/st_snapshot_export_status.json").write_text(
+              json.dumps({
+                  "workflow": "Export ST Research Snapshot V0.1 (Encrypted)",
+                  "status": "FAIL",
+                  "stage": "artifact_upload",
+                  "run_id": os.environ.get("GITHUB_RUN_ID"),
+                  "final_holdout_2024_plus_used": False,
+                  "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+              }, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          fi
           git add diagnostics/st_snapshot_export_status.json
           if ! git diff --cached --quiet; then
-            git commit -m "Record encrypted ST research snapshot export"
+            git commit -m "Record encrypted ST research snapshot export status"
             git pull --rebase origin main
             git push origin HEAD:main
           fi
+
+      - name: Fail workflow on export or upload error
+        if: always()
+        run: |
+          test "${{ steps.export_snapshot.outcome }}" = "success"
+          test "${{ steps.upload_snapshot.outcome }}" = "success"
