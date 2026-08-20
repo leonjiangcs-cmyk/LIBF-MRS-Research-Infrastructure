@@ -20,6 +20,7 @@ EXPORT_DIR = Path("/tmp/libf_mrs_st_snapshot_export_v0_1")
 EXPECTED_BATCHES = 22
 EXPECTED_STOCKS = 5251
 RESEARCH_END = "2023-12-31"
+EXPECTED_MAX_OBSERVED_DATE = "2023-12-29"
 ARTIFACT_NAME = "LIBF_MRS_Internal_Fragility_Research_Snapshot_V0_1_ENCRYPTED"
 
 
@@ -94,11 +95,14 @@ def main() -> int:
             "stocks_with_rows": EXPECTED_STOCKS,
             "checkpoint_count": EXPECTED_BATCHES,
             "final_holdout_2024_plus_used": False,
-            "max_date": RESEARCH_END,
+            "max_date": EXPECTED_MAX_OBSERVED_DATE,
         }
         for key, expected in required.items():
             if m.get(key) != expected:
                 raise SystemExit(f"snapshot gate mismatch for {key}: {m.get(key)!r} != {expected!r}")
+
+        if m.get("gate_metrics", {}).get("post_2023_row_count") != 0:
+            raise SystemExit("snapshot contains rows after research cutoff")
 
         if sha256_file(combined) != m.get("combined_output_sha256"):
             raise SystemExit("combined output SHA256 mismatch")
@@ -111,7 +115,8 @@ def main() -> int:
         transport = {
             "snapshot": "LIBF_MRS_Internal_Fragility_Research_Snapshot_V0_1",
             "purpose": "encrypted transport copy of historical PIT ST remediation for private research storage",
-            "research_window": ["2014-01-01", "2023-12-31"],
+            "research_window": ["2014-01-01", RESEARCH_END],
+            "max_observed_trading_date": m["max_date"],
             "checkpoint_count": EXPECTED_BATCHES,
             "expected_research_stocks": EXPECTED_STOCKS,
             "data_gate": "PASS",
@@ -137,6 +142,8 @@ def main() -> int:
             "checkpoint_count": EXPECTED_BATCHES,
             "expected_stocks": EXPECTED_STOCKS,
             "data_gate": "PASS",
+            "research_cutoff": RESEARCH_END,
+            "max_observed_trading_date": m["max_date"],
             "final_holdout_2024_plus_used": False,
             "combined_plaintext_sha256": m["combined_output_sha256"],
             "updated_at_utc": datetime.now(timezone.utc).isoformat(),
