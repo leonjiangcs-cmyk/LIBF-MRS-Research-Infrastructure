@@ -1,8 +1,8 @@
 {
   "workflow": "Export ST Research Snapshot V0.1 (Encrypted)",
-  "status": "FAIL",
-  "stage": "export_snapshot",
+  "status": "RUNNING",
+  "stage": "started",
   "run_id": "32344980067",
   "final_holdout_2024_plus_used": false,
-  "updated_at_utc": "2026-08-20T07:41:09.327365+00:00"
+  "updated_at_utc": "2026-08-20T07:58:52.908492+00:00"
 }
