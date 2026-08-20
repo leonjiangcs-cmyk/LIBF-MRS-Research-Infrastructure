@@ -1,8 +1,14 @@
 {
   "workflow": "Export ST Research Snapshot V0.1 (Encrypted)",
-  "status": "RUNNING",
-  "stage": "started",
+  "status": "EXPORT_READY",
   "run_id": "32344980067",
+  "artifact_name": "LIBF_MRS_Internal_Fragility_Research_Snapshot_V0_1_ENCRYPTED",
+  "checkpoint_count": 22,
+  "expected_stocks": 5251,
+  "data_gate": "PASS",
+  "research_cutoff": "2023-12-31",
+  "max_observed_trading_date": "2023-12-29",
   "final_holdout_2024_plus_used": false,
-  "updated_at_utc": "2026-08-20T07:58:52.908492+00:00"
+  "combined_plaintext_sha256": "91f429ce2f2f44527b68e4d0fda9c00f92069146189f59b2c33e68d41a83b058",
+  "updated_at_utc": "2026-08-20T08:02:17.147071+00:00"
 }
